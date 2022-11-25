@@ -238,7 +238,7 @@ def plane_pts(rays, planes, id_planes, near, method='planes'):
         method: Method used
 
     Returns:
-        pts: [N_rays, N_samples+N_importance] - intersection points of rays and selected planes
+        pts: [N_rays, N_samples+N_importance,3] - intersection points of rays and selected planes
         z_vals: position of the point along each ray respectively
     """
     # Extract ray and plane definitions
@@ -354,18 +354,20 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
     #  Prepare args if just one sample per ray-object or world frame only
     if len(pts.shape) == 3:
         # [batch_rays, n_obj, samples, xyz]
+        # this if is to resize the input the the expected input
         n_sample_per_ray = pts.shape[1]
 
-        pose = tf.repeat(pose, n_sample_per_ray, axis=0)
+        pose = tf.repeat(pose, n_sample_per_ray, axis=0) # [N_rays,N_objects,3] -> [N_pts,N_objects,3]
         theta_y = tf.repeat(theta_y, n_sample_per_ray, axis=0)
         if dim is not None:
             dim = tf.repeat(dim, n_sample_per_ray, axis=0)
         if len(dirs.shape) == 2:
             dirs = tf.repeat(dirs, n_sample_per_ray, axis=0)
 
-        pts = tf.reshape(pts, [-1, 3])
+        pts = tf.reshape(pts, [-1, 3])  #[N_pts,3]
 
     # Shift the object reference point to the middle of the bbox (vkitti2 specific)
+    # this is just a shift of pose specifically for the vkitti2
     y_shift = (tf.constant([0., -1., 0.])[tf.newaxis, :] if inverse else
                tf.constant([0., -1., 0.])[tf.newaxis, tf.newaxis, :]) * \
               (dim[..., 1] / 2)[..., tf.newaxis]
@@ -373,12 +375,13 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
 
     # Describes the origin of the world system w in the object system o
     t_w_o = rotate_yaw(-pose_w, theta_y)
+    # translation from world to object
 
     if not inverse:
         N_obj = theta_y.shape[1]
         pts_w = tf.repeat(pts[:, tf.newaxis, ...], N_obj, axis=1)
         dirs_w = tf.repeat(dirs[:, tf.newaxis, ...], N_obj, axis=1)
-
+        # shape all tensor to [N_pts,N_obj,..]
         # Rotate coordinate axis
         # TODO: Generalize for 3d roaations
         pts_o = rotate_yaw(pts_w, theta_y) + t_w_o
@@ -392,7 +395,7 @@ def world2object(pts, dirs, pose, theta_y, dim=None, inverse=False):
         # Normalize direction
         dirs_o = dirs_o / tf.norm(dirs_o, axis=3)[..., tf.newaxis, :]
         return [pts_o, dirs_o]
-
+    # haven't read below
     else:
         pts_o = pts[tf.newaxis, :, tf.newaxis, :]
         dirs_o = dirs

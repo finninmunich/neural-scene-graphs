@@ -1,6 +1,7 @@
 import os
 import random
 import time
+
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 from neural_scene_graph_helper import *
@@ -24,26 +25,30 @@ def batchify(fn, chunk):
         return fn
 
     def ret(inputs):
-        return tf.concat([fn(inputs[i:i+chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
+        return tf.concat([fn(inputs[i:i + chunk]) for i in range(0, inputs.shape[0], chunk)], 0)
+
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, embedobj_fn, netchunk=1024*64):
+# TODO: run_network
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, embedobj_fn, netchunk=1024 * 64):
     """Prepares inputs and applies network 'fn'."""
-    inputs_flat = tf.reshape(inputs[..., :3], [-1, 3])
+    # the shape of input shall be (H,W，3+something) or (H*W,B,3+something)
+    inputs_flat = tf.reshape(inputs[..., :3], [-1, 3])  # Here only the first three elements are extracted
 
     embedded = embed_fn(inputs_flat)
     if inputs.shape[-1] > 3:
         if inputs.shape[-1] == 4:
             # NeRF + T w/o embedding
-            time_st = tf.reshape(inputs[..., 3], [inputs_flat.shape[0], -1])
-            embedded = tf.concat([embedded, time_st], -1)
+            time_st = tf.reshape(inputs[..., 3], [inputs_flat.shape[0], -1])  # time stamp, reshape accordingly
+            embedded = tf.concat([embedded, time_st], -1)  # finaly embedded one
         else:
             # NeRF + Latent Code
             inputs_latent = tf.reshape(inputs[..., 3:], [inputs_flat.shape[0], -1])
             embedded = tf.concat([embedded, inputs_latent], -1)
 
     if viewdirs is not None:
+        # reshape input_dirs to the same size of inputs(xyz)
         input_dirs = tf.broadcast_to(viewdirs[:, None, :3], inputs[..., :3].shape)
         input_dirs_flat = tf.reshape(input_dirs, [-1, input_dirs.shape[-1]])
         embedded_dirs = embeddirs_fn(input_dirs_flat)
@@ -51,18 +56,20 @@ def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, embedobj_fn, netch
 
         if viewdirs.shape[-1] > 3:
             # Use global locations of objects
+            # here is the P in the paper
             input_obj_pose = tf.broadcast_to(viewdirs[:, None, 3:],
                                              shape=[inputs[..., :3].shape[0], inputs[..., :3].shape[1], 3])
             input_obj_pose_flat = tf.reshape(input_obj_pose, [-1, input_obj_pose.shape[-1]])
             embedded_obj = embedobj_fn(input_obj_pose_flat)
             embedded = tf.concat([embedded, embedded_obj], -1)
-
+    # apply fn to each chunk in the inputs(here is embedded)
     outputs_flat = batchify(fn, netchunk)(embedded)
     outputs = tf.reshape(outputs_flat, list(
         inputs.shape[:-1]) + [outputs_flat.shape[-1]])
     return outputs
 
 
+# TODO: render function
 def render_rays(ray_batch,
                 network_fn,
                 network_query_fn,
@@ -94,17 +101,18 @@ def render_rays(ray_batch,
         for sampling along a ray, including: ray origin, ray direction, min
         dist, max dist, and unit-magnitude viewing direction.
       network_fn: function. Model for predicting RGB and density at each point
-        in space.
+        in space.  BACKGROUND MODEL?
       network_query_fn: function used for passing queries to network_fn.
-      N_samples: int. Number of different times to sample along each ray.
+      N_samples: int. Number of different numbers to sample along each ray.
+      N_samples_obj: int. ... in objects
       retraw: bool. If True, include model's raw, unprocessed predictions.
       perturb: float, 0 or 1. If non-zero, each ray is sampled at stratified
         random points in time.
-      N_importance: int. Number of additional times to sample along each ray.
+      N_importance: int. Number of additional numbers to sample along each ray.
         These samples are only passed to network_fine.
       network_fine: "fine" network with same spec as network_fn.
-      object_network_fn_dict: dictinoary of functions. Model for predicting RGB and density at each point in
-        object frames
+      object_network_fn_dict: dictionary of functions. Model for predicting RGB and density at each point in
+        object frames DYNAMIC MODEL?
       latent_vector_dict: Dictionary of latent codes
       N_obj: Maximumn amount of objects per ray
       obj_only: bool. If True, only run models from object_network_fn_dict
@@ -129,6 +137,7 @@ def render_rays(ray_batch,
         sample.
     """
 
+    # TODO: integration function
     def raw2outputs(raw, z_vals, rays_d):
         """Transforms model's predictions to semantically meaningful values.
 
@@ -144,10 +153,13 @@ def render_rays(ray_batch,
           weights: [num_rays, num_samples]. Weights assigned to each sampled color.
           depth_map: [num_rays]. Estimated distance to object.
         """
+
         # Function for computing density from model prediction. This value is
         # strictly between [0, 1].
-        def raw2alpha(raw, dists, act_fn=tf.nn.relu): return 1.0 - \
-            tf.exp(-act_fn(raw) * dists)
+        # function to calculate alpha
+        def raw2alpha(raw, dists, act_fn=tf.nn.relu):
+            return 1.0 - \
+                   tf.exp(-act_fn(raw) * dists)
 
         # Compute 'distance' (in time) between each integration time along a ray.
         dists = z_vals[..., 1:] - z_vals[..., :-1]
@@ -159,12 +171,13 @@ def render_rays(ray_batch,
 
         # Multiply each distance by the norm of its corresponding direction ray
         # to convert to real world distance (accounts for non-unit directions).
+        # TODO: not fully understand
         dists = dists * tf.linalg.norm(rays_d[..., None, :], axis=-1)
 
         # Extract RGB of each sample position along each ray.
         rgb = tf.math.sigmoid(raw[..., :3])  # [N_rays, N_samples, 3]
 
-        # Add noise to model's predictions for density. Can be used to 
+        # Add noise to model's predictions for density. Can be used to
         # regularize network during training (prevents floater artifacts).
         noise = 0.
         if raw_noise_std > 0.:
@@ -179,32 +192,35 @@ def render_rays(ray_batch,
         # sample yet.
         # [N_rays, N_samples]
         weights = alpha * \
-            tf.math.cumprod(1.-alpha + 1e-10, axis=-1, exclusive=True)
+                  tf.math.cumprod(1. - alpha + 1e-10, axis=-1, exclusive=True)  # This is Transmitte
 
         # Computed weighted color of each sample along each ray.
+        # shape of weights: [N_rays,N_samples], of rgb: [N_rays,N_samples,3]
         rgb_map = tf.reduce_sum(
             weights[..., None] * rgb, axis=-2)  # [N_rays, 3]
 
         # Estimated depth map is expected distance.
+        # shape of weights: (N_rays,N_samples), of Z_vals: (N_rays,N_samples)
         depth_map = tf.reduce_sum(weights * z_vals, axis=-1)
 
         # Disparity map is inverse depth.
-        disp_map = 1./tf.maximum(1e-10, depth_map /
-                                 tf.reduce_sum(weights, axis=-1))
+        disp_map = 1. / tf.maximum(1e-10, depth_map /
+                                   tf.reduce_sum(weights, axis=-1))
 
         # Sum of weights along each ray. This value is in [0, 1] up to numerical error.
         acc_map = tf.reduce_sum(weights, -1)
 
         # To composite onto a white background, use the accumulated alpha map.
         if white_bkgd:
-            rgb_map = rgb_map + (1.-acc_map[..., None])
+            rgb_map = rgb_map + (1. - acc_map[..., None])
 
         return rgb_map, disp_map, acc_map, weights, depth_map
 
-
+    # TODO: sampling method along each ray
     def sample_along_ray(near, far, N_samples, N_rays, sampling_method, perturb):
         # Sample along each ray given one of the sampling methods. Under the logic, all rays will be sampled at
         # the same times.
+        # stratified sampling
         t_vals = tf.linspace(0., 1., N_samples)
         if sampling_method == 'squareddist':
             z_vals = near * (1. - np.square(t_vals)) + far * (np.square(t_vals))
@@ -214,11 +230,12 @@ def render_rays(ray_batch,
         else:
             # Space integration times linearly between 'near' and 'far'. Same
             # integration points will be used for all rays.
-            z_vals = near * (1.-t_vals) + far * (t_vals)
+            z_vals = near * (1. - t_vals) + far * (t_vals)
             if sampling_method == 'discrete':
                 perturb = 0
 
         # Perturb sampling time along each ray. (vanilla NeRF option)
+        # add pertubation to the sampling
         if perturb > 0.:
             # get intervals between samples
             mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
@@ -229,7 +246,6 @@ def render_rays(ray_batch,
             z_vals = lower + (upper - lower) * t_rand
 
         return tf.broadcast_to(z_vals, [N_rays, N_samples]), perturb
-
 
     ###############################
     # batch size
@@ -262,15 +278,17 @@ def render_rays(ray_batch,
         # For training object models only sampling close to the objects is performed
         if (sampling_method == 'planes' or sampling_method == 'planes_plus') and plane_bds is not None:
             # Sample at ray plane intersection (Neural Scene Graphs)
+            # This sample is for background, the below function has not been read
             pts, z_vals = plane_pts([rays_o, rays_d], [plane_bds, plane_normal, delta], id_planes, near,
                                     method=sampling_method)
             N_importance = 0
         else:
             # Sample along ray (vanilla NeRF)
+            # vanila sample along the ray
             z_vals, perturb = sample_along_ray(near, far, N_samples, N_rays, sampling_method, perturb)
 
             pts = rays_o[..., None, :] + rays_d[..., None, :] * \
-                z_vals[..., :, None]  # [N_rays, N_samples, 3]
+                  z_vals[..., :, None]  # [N_rays, N_samples, 3] coordinates of each poitns in world space
 
     ####### DEBUG Sampling Points
     # print('TURN OFF IF NOT DEBUGING!')
@@ -295,7 +313,7 @@ def render_rays(ray_batch,
 
     # Choose input options
     if not N_obj:
-        # No objects
+        # No objects, only background, so we dont need to do any coordiante transformation
         if use_time:
             # Time parameter input
             time_stamp_fine = tf.repeat(time_stamp[:, tf.newaxis], N_importance + N_samples,
@@ -307,23 +325,40 @@ def render_rays(ray_batch,
             raw = network_query_fn(pts, viewdirs, network_fn)
     else:
         n_intersect = None
-        if not obj_pose.shape[-1] > 5:
-            # If no object dimension is given all points in the scene given in object coordinates will be used as an input to each object model
+        # the shape of full obj_pose is supposed to be ->
+        # [N_rays, N_obj, 8] with 3D position, y rot angle, track_id, (3D dimension - length, height, width)
+        # the shape of pts: [N_rays,N_samples,3]
+        if not obj_pose.shape[-1] > 5:  # we don't have the size of bounding box
+            # If no object dimension is given, all points in the scene given in object coordinates will be used as an input to each object model
+            # here it transform all points to the objects frame
             pts_obj, viewdirs_obj = world2object(pts, viewdirs, obj_pose[..., :3], obj_pose[..., 3],
-                                                 dim=obj_pose[..., 5:8] if obj_pose.shape[-1] > 5 else None)
+                                                 dim=obj_pose[..., 5:8] if obj_pose.shape[-1] > 5 else None) \
+                # world2object: transform from world coordinate to object coordinate
 
             pts_obj = tf.transpose(tf.reshape(pts_obj, [N_rays, N_samples, N_obj, 3]), [0, 2, 1, 3])
+            # [N_rays,N_obj,N_samples,3]
 
             inputs = tf.concat([pts_obj, tf.repeat(obj_pose[..., None, :3], N_samples, axis=2)], axis=3)
+            # [N_rays,N_obj,N_samples,6]
         else:
             # If 3D bounding boxes are given get intersecting rays and intersection points in scaled object frames
-            pts_box_w, viewdirs_box_w, z_vals_in_w, z_vals_out_w,\
+            pts_box_w, viewdirs_box_w, z_vals_in_w, z_vals_out_w, \
             pts_box_o, viewdirs_box_o, z_vals_in_o, z_vals_out_o, \
             intersection_map = box_pts(
                 [rays_o, rays_d], obj_pose[..., :3], obj_pose[..., 3], dim=obj_pose[..., 5:8],
                 one_intersec_per_ray=not obj_transparency)
+            # haven't read the box_pts carefully, here is the meaning of outputs
+            # pts_box_w: box-ray intersection points given in the world frame
+            # viewdirs_box_w: view directions of each intersection point in the world frame
+            # pts_box_o: box-ray intersection points given in the respective object frame
+            # viewdirs_box_o: view directions of each intersection point in the respective object frame
+            # z_vals_in/out_w: integration step in the world frame
+            # z_vals_in/out_o: integration step for scaled rays in the object frame
+            # depth of input points and exit points of ray intersecting bounding boxes
+            # intersection_map: mapping of points, viewdirs and z_vals to the specific rays and objects at the intersection
 
             if z_vals_in_o is None or len(z_vals_in_o) == 0:
+                # if rays are not intersecting with any objects
                 if obj_only:
                     # No computation necesary if rays are not intersecting with any objects and no background is selected
                     raw = tf.zeros([N_rays, 1, 4])
@@ -333,7 +368,7 @@ def render_rays(ray_batch,
                         raw, z_vals, rays_d)
 
                     rgb_map = tf.ones([N_rays, 3])
-                    disp_map = tf.ones([N_rays])*1e10
+                    disp_map = tf.ones([N_rays]) * 1e10
                     acc_map = tf.zeros([N_rays])
                     depth_map = tf.zeros([N_rays])
 
@@ -347,20 +382,23 @@ def render_rays(ray_batch,
                     intersection_map = tf.cast(tf.zeros([1, 3]), tf.int32)
 
             else:
+                # we have some intersection between rays and objects
                 n_intersect = z_vals_in_o.shape[0]
 
                 obj_pose = tf.gather_nd(obj_pose, intersection_map)
-                obj_pose = tf.repeat(obj_pose[:, tf.newaxis, :], N_samples_obj, axis=1)
+                # here we filter the obj_pose to only care about those having interesction with rays
+                obj_pose = tf.repeat(obj_pose[:, tf.newaxis, :], N_samples_obj, axis=1) \
+                    # I think the shape is [N_ray',N_samples_obj,3]
                 # Get additional model inputs for intersecting rays
                 if N_samples_obj > 1:
                     z_vals_box_o = tf.repeat(tf.linspace(0., 1., N_samples_obj)[tf.newaxis, :], n_intersect, axis=0) * \
                                    (z_vals_out_o - z_vals_in_o)[:, tf.newaxis]
                 else:
-                    z_vals_box_o = tf.repeat(tf.constant(1/2)[tf.newaxis,tf.newaxis], n_intersect, axis=0) * \
+                    z_vals_box_o = tf.repeat(tf.constant(1 / 2)[tf.newaxis, tf.newaxis], n_intersect, axis=0) * \
                                    (z_vals_out_o - z_vals_in_o)[:, tf.newaxis]
 
                 pts_box_samples_o = pts_box_o[:, tf.newaxis, :] + viewdirs_box_o[:, tf.newaxis, :] \
-                                        * z_vals_box_o[..., tf.newaxis]
+                                    * z_vals_box_o[..., tf.newaxis]
                 # pts_box_samples_o = pts_box_samples_o[:, tf.newaxis, ...]
                 # pts_box_samples_o = tf.reshape(pts_box_samples_o, [-1, 3])
 
@@ -369,13 +407,18 @@ def render_rays(ray_batch,
                 pts_box_samples_w, _ = world2object(tf.reshape(pts_box_samples_o, [-1, 3]), None,
                                                     obj_pose_transform[..., :3],
                                                     obj_pose_transform[..., 3],
-                                                    dim=obj_pose_transform[..., 5:8] if obj_pose.shape[-1] > 5 else None,
+                                                    dim=obj_pose_transform[..., 5:8] if obj_pose.shape[
+                                                                                            -1] > 5 else None,
                                                     inverse=True)
 
                 pts_box_samples_w = tf.reshape(pts_box_samples_w, [n_intersect, N_samples_obj, 3])
+                # we can use intersection map to find which ray contain these points, this is in world coordinates, we still
+                # need to find its corresponding origin to calculate the distance value
 
-                z_vals_obj_w = tf.norm(pts_box_samples_w - tf.gather_nd(rays_o, intersection_map[:, 0, tf.newaxis])[:, tf.newaxis, :], axis=-1)
-
+                z_vals_obj_w = tf.norm(
+                    pts_box_samples_w - tf.gather_nd(rays_o, intersection_map[:, 0, tf.newaxis])[:, tf.newaxis, :],
+                    axis=-1)
+                # distance of all points in the boudning boxes
                 # else:
                 #     z_vals_obj_w = z_vals_in_w[:, tf.newaxis]
                 #     pts_box_samples_o = pts_box_o[:, tf.newaxis, :]
@@ -391,8 +434,13 @@ def render_rays(ray_batch,
                 ####
 
                 # Extract objects
+                # here we should notice that the obj_pose has already been filtered
                 obj_ids = obj_pose[..., 4]
-                object_y, object_idx = tf.unique(tf.reshape(obj_pose[..., 4], [-1]))
+                object_y, object_idx = tf.unique(tf.reshape(obj_ids, [-1]))
+                # for example:
+                # x = [1,1,2,4,4,4,7,8,8]
+                # y = [1,2,4,7,8]
+                # idx = [0,0,1,2,2,2,3,4,4]
                 # Extract classes
                 obj_class = obj_pose[..., 8]
                 unique_classes = tf.unique(tf.reshape(obj_class, [-1]))
@@ -405,10 +453,12 @@ def render_rays(ray_batch,
 
                     for y, obj_id in enumerate(object_y):
                         indices = tf.where(tf.equal(object_idx, y))
-                        latent_vector = latent_vector_dict['latent_vector_obj_' + str(int(obj_id)).zfill(5)][tf.newaxis, :]
+                        latent_vector = latent_vector_dict['latent_vector_obj_' + str(int(obj_id)).zfill(5)][tf.newaxis,
+                                        :]
                         latent_vector = tf.repeat(latent_vector, indices.shape[0], axis=0)
 
-                        latent_vector = tf.scatter_nd(indices, latent_vector, [n_intersect*N_samples_obj, latent_vector.shape[-1]])
+                        latent_vector = tf.scatter_nd(indices, latent_vector,
+                                                      [n_intersect * N_samples_obj, latent_vector.shape[-1]])
 
                         if latent_vector_inputs is None:
                             latent_vector_inputs = latent_vector
@@ -441,16 +491,15 @@ def render_rays(ray_batch,
             z_vals, _, id_z_vals_obj = combine_z(None, z_vals_obj_w, intersection_map, N_rays, N_samples, N_obj,
                                                  N_samples_obj)
 
-
         if not obj_only:
             # Run background model
-            raw = tf.zeros([N_rays, N_samples + N_obj*N_samples_obj, 4])
+            raw = tf.zeros([N_rays, N_samples + N_obj * N_samples_obj, 4])
             raw_sh = raw.shape
             # Predict RGB and density from background
             raw_bckg = network_query_fn(pts, viewdirs, network_fn)
             raw += tf.scatter_nd(id_z_vals_bckg, raw_bckg, raw_sh)
         else:
-            raw = tf.zeros([N_rays, N_obj*N_samples_obj, 4])
+            raw = tf.zeros([N_rays, N_obj * N_samples_obj, 4])
             raw_sh = raw.shape
 
         if z_vals_in_o is not None and len(z_vals_in_o) != 0:
@@ -467,19 +516,23 @@ def render_rays(ray_batch,
                             obj_network_fn = object_network_fn_dict[model_name]
 
                             inputs_obj_k = tf.gather_nd(inputs, input_indices)
-                            viewdirs_obj_k = tf.gather_nd(viewdirs_obj, input_indices[..., None, 0]) if N_samples_obj == 1 else \
-                                tf.gather_nd(viewdirs_obj, input_indices[..., None,0, 0])
+                            viewdirs_obj_k = tf.gather_nd(viewdirs_obj,
+                                                          input_indices[..., None, 0]) if N_samples_obj == 1 else \
+                                tf.gather_nd(viewdirs_obj, input_indices[..., None, 0, 0])
 
                             # Predict RGB and density from object model
                             raw_k = network_query_fn(inputs_obj_k, viewdirs_obj_k, obj_network_fn)
 
                             if n_intersect is not None:
                                 # Arrange RGB and denisty from object models along the respective rays
-                                raw_k = tf.scatter_nd(input_indices[:, :], raw_k, [n_intersect, N_samples_obj, 4]) # Project the network outputs to the corresponding ray
-                                raw_k = tf.scatter_nd(intersection_map[:, :2], raw_k, [N_rays, N_obj, N_samples_obj, 4]) # Project to rays and object intersection order
-                                raw_k = tf.scatter_nd(id_z_vals_obj, raw_k, raw_sh) # Reorder along z and ray
+                                raw_k = tf.scatter_nd(input_indices[:, :], raw_k, [n_intersect, N_samples_obj,
+                                                                                   4])  # Project the network outputs to the corresponding ray
+                                raw_k = tf.scatter_nd(intersection_map[:, :2], raw_k, [N_rays, N_obj, N_samples_obj,
+                                                                                       4])  # Project to rays and object intersection order
+                                raw_k = tf.scatter_nd(id_z_vals_obj, raw_k, raw_sh)  # Reorder along z and ray
                             else:
-                                raw_k = tf.scatter_nd(input_indices[:, 0][..., tf.newaxis], raw_k, [N_rays, N_samples, 4])
+                                raw_k = tf.scatter_nd(input_indices[:, 0][..., tf.newaxis], raw_k,
+                                                      [N_rays, N_samples, 4])
 
                             # Add RGB and density from object model to the background and other object predictions
                             raw += raw_k
@@ -509,7 +562,7 @@ def render_rays(ray_batch,
                             #                               input_indices[..., 0]) if N_samples_obj == 1 else \
                             #     tf.gather_nd(viewdirs_obj, input_indices)
 
-                            viewdirs_obj_c = tf.gather_nd(viewdirs_obj, input_indices[..., None, 0])[:,0,:]
+                            viewdirs_obj_c = tf.gather_nd(viewdirs_obj, input_indices[..., None, 0])[:, 0, :]
 
                             # Predict RGB and density from object model
                             raw_k = network_query_fn(inputs_obj_c, viewdirs_obj_c, obj_network_fn)
@@ -520,7 +573,8 @@ def render_rays(ray_batch,
                                                                                    4])  # Project the network outputs to the corresponding ray
                                 raw_k = tf.scatter_nd(intersection_map[:, :2], raw_k, [N_rays, N_obj, N_samples_obj,
                                                                                        4])  # Project to rays and object intersection order
-                                raw_k = tf.scatter_nd(id_z_vals_obj, raw_k, raw_sh)  # Reorder along z in  positive ray direction
+                                raw_k = tf.scatter_nd(id_z_vals_obj, raw_k,
+                                                      raw_sh)  # Reorder along z in  positive ray direction
                             else:
                                 raw_k = tf.scatter_nd(input_indices[:, 0][..., tf.newaxis], raw_k,
                                                       [N_rays, N_samples, 4])
@@ -528,9 +582,7 @@ def render_rays(ray_batch,
                             # Add RGB and density from object model to the background and other object predictions
                             raw += raw_k
                         else:
-                            print('No model ', model_name,' found')
-
-
+                            print('No model ', model_name, ' found')
 
     # raw_2 = render_mot_scene(pts, viewdirs, network_fn, network_query_fn,
     #                  inputs, viewdirs_obj, z_vals_in_o, n_intersect, object_idx, object_y, obj_pose,
@@ -559,7 +611,7 @@ def render_rays(ray_batch,
             # Obtain all points to evaluate color, density at.
             z_vals = tf.sort(tf.concat([z_vals, z_samples], -1), -1)
             pts = rays_o[..., None, :] + rays_d[..., None, :] * \
-                z_vals[..., :, None]  # [N_rays, N_samples + N_importance, 3]
+                  z_vals[..., :, None]  # [N_rays, N_samples + N_importance, 3]
 
         # Make predictions with network_fine.
         if use_time:
@@ -588,11 +640,11 @@ def render_rays(ray_batch,
     return ret
 
 
-def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
+def batchify_rays(rays_flat, chunk=1024 * 32, **kwargs):
     """Render rays in smaller minibatches to avoid OOM."""
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
-        ret = render_rays(rays_flat[i:i+chunk], **kwargs)
+        ret = render_rays(rays_flat[i:i + chunk], **kwargs)
         for k in ret:
             if k not in all_ret:
                 all_ret[k] = []
@@ -605,7 +657,7 @@ def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
 def render(H,
            W,
            focal,
-           chunk=1024*32,
+           chunk=1024 * 32,
            rays=None,
            c2w=None,
            obj=None,
@@ -632,7 +684,7 @@ def render(H,
       near: float or array of shape [batch_size]. Nearest distance for a ray.
       far: float or array of shape [batch_size]. Farthest distance for a ray.
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
-      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for 
+      c2w_staticcam: array of shape [3, 4]. If not None, use this transformation matrix for
        camera while using other c2w argument for viewing directions.
 
     Returns:
@@ -649,9 +701,9 @@ def render(H,
         # rays_d = rays[..., 3:]
         rays_o, rays_d = get_rays(H, W, focal, c2w)
         if obj is not None:
-            obj = tf.repeat(obj[None, ...], H*W, axis=0)
+            obj = tf.repeat(obj[None, ...], H * W, axis=0)
         if time_stamp is not None:
-            time_stamp = tf.repeat(time_stamp[None, ...], H*W, axis=0)
+            time_stamp = tf.repeat(time_stamp[None, ...], H * W, axis=0)
     else:
         # use provided ray batch
         rays_o, rays_d = rays
@@ -674,7 +726,7 @@ def render(H,
     rays_o = tf.cast(tf.reshape(rays_o, [-1, 3]), dtype=tf.float32)
     rays_d = tf.cast(tf.reshape(rays_d, [-1, 3]), dtype=tf.float32)
     near, far = near * \
-        tf.ones_like(rays_d[..., :1]), far * tf.ones_like(rays_d[..., :1])
+                tf.ones_like(rays_d[..., :1]), far * tf.ones_like(rays_d[..., :1])
 
     # (ray origin, ray direction, min dist, max dist) for each ray
     rays = tf.concat([rays_o, rays_d, near, far], axis=-1)
@@ -707,14 +759,13 @@ def render(H,
 
 def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None, gt_imgs=None, savedir=None,
                 render_factor=0, render_manipulation=None, rm_obj=None, time_stamp=None):
-
     H, W, focal = hwf
 
     if render_factor != 0:
         # Render downsampled for speed
-        H = H//render_factor
-        W = W//render_factor
-        focal = focal/render_factor
+        H = H // render_factor
+        W = W // render_factor
+        focal = focal / render_factor
 
     rgbs = []
     disps = []
@@ -754,7 +805,6 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
             # rm_obj = [3, 4, 8, 5, 12]
             render_set = manipulate_obj_pose(render_manipulation, np.array(obj), obj_meta, i, rm_obj=rm_obj)
 
-
             # Load manual generated scene graphs
             if render_manipulation is not None and 'handcraft' in render_manipulation:
                 if str(i).zfill(3) + '.txt' in os.listdir(savedir):
@@ -763,7 +813,9 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                     loaded_obj_i = []
                     loaded_objs = np.loadtxt(os.path.join(savedir, str(i).zfill(3) + '.txt'))[:, :6]
                     loaded_objs[:, 5] = 0
-                    loaded_objs[:, 4] = np.array([np.where(np.equal(obj_meta[:, 0], loaded_objs[j, 4])) for j in range(len(loaded_objs))])[:, 0, 0]
+                    loaded_objs[:, 4] = np.array(
+                        [np.where(np.equal(obj_meta[:, 0], loaded_objs[j, 4])) for j in range(len(loaded_objs))])[:, 0,
+                                        0]
                     loaded_objs = tf.cast(loaded_objs, tf.float32)
                     loaded_obj_i.append(loaded_objs)
                     render_set.append(loaded_obj_i)
@@ -827,8 +879,8 @@ def render_path(render_poses, hwf, chunk, render_kwargs, obj=None, obj_meta=None
                     if render_manipulation is not None:
                         if 'handcraft' in render_manipulation:
                             filename = os.path.join(savedir, '{:03d}.txt'.format(j))
-                            np.savetxt(filename, np.array(obj_i), fmt='%.18e %.18e %.18e %.18e %.1e %.18e %.18e %.18e %.1e')
-
+                            np.savetxt(filename, np.array(obj_i),
+                                       fmt='%.18e %.18e %.18e %.18e %.1e %.18e %.18e %.18e %.1e')
 
                 print(j, time.time() - t)
 
@@ -891,14 +943,13 @@ def create_nerf(args):
                 input_ch_color_head += input_ch_obj
             # TODO: Change to number of objects in Frames
             for object_i in args.scene_objects:
-
-                model_name = 'model_obj_' + str(int(object_i)) # .zfill(5)
+                model_name = 'model_obj_' + str(int(object_i))  # .zfill(5)
 
                 model_obj = init_nerf_model(
                     D=args.netdepth_fine, W=args.netwidth_fine,
                     input_ch=input_ch, output_ch=output_ch, skips=skips,
-                    input_ch_color_head=input_ch_color_head, use_viewdirs=args.use_viewdirs,trainable=trainable)
-                    # latent_size=args.latent_size)
+                    input_ch_color_head=input_ch_color_head, use_viewdirs=args.use_viewdirs, trainable=trainable)
+                # latent_size=args.latent_size)
 
                 grad_vars += model_obj.trainable_variables
                 models[model_name] = model_obj
@@ -921,15 +972,15 @@ def create_nerf(args):
                     input_ch_color_head=input_ch_color_head,
                     # input_ch_shadow_head=input_ch_obj,
                     use_viewdirs=args.use_viewdirs, trainable=trainable)
-                    # use_shadows=args.use_shadows,
-                    # latent_size=args.latent_size)
+                # use_shadows=args.use_shadows,
+                # latent_size=args.latent_size)
 
                 grad_vars += model_obj.trainable_variables
                 models[model_name] = model_obj
                 models_dynamic_dict[model_name] = model_obj
 
             for object_i in args.scene_objects:
-                name = 'latent_vector_obj_'+str(int(object_i)).zfill(5)
+                name = 'latent_vector_obj_' + str(int(object_i)).zfill(5)
                 latent_vector_obj = init_latent_vector(args.latent_size, name)
                 grad_vars.append(latent_vector_obj)
 
@@ -937,12 +988,13 @@ def create_nerf(args):
                 latent_vector_dict[name] = latent_vector_obj
 
     # TODO: Remove object embedding function
-    def network_query_fn(inputs, viewdirs, network_fn): return run_network(
-        inputs, viewdirs, network_fn,
-        embed_fn=embed_fn,
-        embeddirs_fn=embeddirs_fn,
-        embedobj_fn=embedobj_fn,
-        netchunk=args.netchunk)
+    def network_query_fn(inputs, viewdirs, network_fn):
+        return run_network(
+            inputs, viewdirs, network_fn,
+            embed_fn=embed_fn,
+            embeddirs_fn=embeddirs_fn,
+            embedobj_fn=embedobj_fn,
+            netchunk=args.netchunk)
 
     render_kwargs_train = {
         'network_query_fn': network_query_fn,
@@ -1019,7 +1071,7 @@ def create_nerf(args):
         if latent_vector_dict is not None:
             for latent_vector_name, latent_vector in latent_vector_dict.items():
                 ft_weights_obj = '{}'.format(ft_weights[:-16]) + \
-                                     latent_vector_name + '_{}'.format(ft_weights[-10:])
+                                 latent_vector_name + '_{}'.format(ft_weights[-10:])
                 print('Reloading objects latent vector from', ft_weights_obj)
                 latent_vector.assign(np.load(ft_weights_obj, allow_pickle=True))
 
@@ -1047,7 +1099,6 @@ def create_nerf(args):
 
 
 def config_parser():
-
     import configargparse
     parser = configargparse.ArgumentParser()
     parser.add_argument('--config', is_config_file=True,
@@ -1067,15 +1118,15 @@ def config_parser():
                         default=8, help='layers in fine network')
     parser.add_argument("--netwidth_fine", type=int, default=256,
                         help='channels per layer in fine network')
-    parser.add_argument("--N_rand", type=int, default=32*32*4,
+    parser.add_argument("--N_rand", type=int, default=32 * 32 * 4,
                         help='batch size (number of random rays per gradient step)')
     parser.add_argument("--lrate", type=float,
                         default=5e-4, help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=250,
                         help='exponential learning rate decay (in 1000s)')
-    parser.add_argument("--chunk", type=int, default=1024*32,
+    parser.add_argument("--chunk", type=int, default=1024 * 32,
                         help='number of rays processed in parallel, decrease if running out of memory')
-    parser.add_argument("--netchunk", type=int, default=1024*64,
+    parser.add_argument("--netchunk", type=int, default=1024 * 64,
                         help='number of pts sent through network in parallel, decrease if running out of memory')
     # Disabled and not implemented for Neural Scene Graphs
     parser.add_argument("--no_batching", action='store_true',
@@ -1108,7 +1159,7 @@ def config_parser():
     parser.add_argument("--precrop_iters", type=int, default=0,
                         help='number of steps to train on central crops')
     parser.add_argument("--precrop_frac", type=float,
-                        default=.5, help='fraction of img taken for central crops')    
+                        default=.5, help='fraction of img taken for central crops')
 
     # rendering options
     parser.add_argument("--N_samples", type=int, default=64,
@@ -1202,9 +1253,9 @@ def config_parser():
                         help='specifies the distance from the last pose to the far plane')
 
     # logging/saving options
-    parser.add_argument("--i_print",   type=int, default=100,
+    parser.add_argument("--i_print", type=int, default=100,
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_img",     type=int, default=500,
+    parser.add_argument("--i_img", type=int, default=500,
                         help='frequency of tensorboard image logging')
     parser.add_argument("--i_weights", type=int, default=10000,
                         help='frequency of weight ckpt saving')
@@ -1223,10 +1274,9 @@ def config_parser():
 
 
 def train():
-
     parser = config_parser()
     args = parser.parse_args()
-    
+
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)
         np.random.seed(args.random_seed)
@@ -1264,7 +1314,7 @@ def train():
                             use_time=args.use_time,
                             exp=True if 'exp' in args.expname else False)
         print('Loaded kitti', images.shape,
-              #render_poses.shape,
+              # render_poses.shape,
               hwf,
               args.datadir)
 
@@ -1325,7 +1375,6 @@ def train():
         #
         # print('Stored Image set for SRNs')
 
-
         # Get COLMAP formated poses
         # colmap_poses = poses[:, :3, :]
         # colmap_poses = np.concatenate([colmap_poses, np.repeat(np.array(hwf)[None], len(poses), axis=0)[..., None]], axis=2)
@@ -1337,13 +1386,14 @@ def train():
         # TODO: Class by integer instead of hot-one-encoding for latent encoding in visible object
         images, instance_segm, poses, frame_id, render_poses, hwf, i_split, visible_objects, objects_meta, render_objects, bboxes = \
             load_vkitti_data(args.datadir,
-                             selected_frames=[args.first_frame[0], args.last_frame[0]] if args.last_frame[0] >= 0 else -1,
+                             selected_frames=[args.first_frame[0], args.last_frame[0]] if args.last_frame[
+                                                                                              0] >= 0 else -1,
                              use_obj=args.use_object_properties,
-                             row_id=True if args.object_setting == 0 or args.object_setting == 1 else False,)
+                             row_id=True if args.object_setting == 0 or args.object_setting == 1 else False, )
         render_time_stamp = None
 
         print('Loaded vkitti', images.shape,
-              #render_poses.shape,
+              # render_poses.shape,
               hwf,
               args.datadir)
         if visible_objects is not None:
@@ -1499,7 +1549,6 @@ def train():
     global_step = tf.compat.v1.train.get_or_create_global_step()
     global_step.assign(start)
 
-
     N_rand = args.N_rand
     # For random ray batching.
     #
@@ -1527,8 +1576,8 @@ def train():
         rays_rgb = rays_rgb.astype(np.float32)
         if args.use_time:
             time_stamp_train = np.stack([time_stamp[i]
-                                   for i in i_train], axis=0)
-            time_stamp_train = np.repeat(time_stamp_train[:, None, :], H*W, axis=0).astype(np.float32)
+                                         for i in i_train], axis=0)
+            time_stamp_train = np.repeat(time_stamp_train[:, None, :], H * W, axis=0).astype(np.float32)
             rays_rgb = np.concatenate([rays_rgb, time_stamp_train], axis=1)
 
     else:
@@ -1550,13 +1599,14 @@ def train():
         rays_rgb_env = np.stack([rays_rgb_env[i]
                                  for i in i_train], axis=0)  # train images only
         # [(N-1)*H*W, ro+rd+rgb+ obj_pose*max_obj, 3]
-        rays_rgb_env = np.reshape(rays_rgb_env, [-1, 3+input_size, 3])
+        rays_rgb_env = np.reshape(rays_rgb_env, [-1, 3 + input_size, 3])
 
         rays_rgb = rays_rgb_env.astype(np.float32)
         del rays_rgb_env
 
         # get all rays intersecting objects
-        if (args.bckg_only or args.obj_only or args.model_library is not None or args.use_object_properties): #and not args.debug_local:
+        if (
+                args.bckg_only or args.obj_only or args.model_library is not None or args.use_object_properties):  # and not args.debug_local:
             bboxes = None
             print(rays_rgb.shape)
 
@@ -1570,7 +1620,7 @@ def train():
                     # B) Single object per scene
                     rays_on_obj = []
                     for obj_track_id in args.scene_objects:
-                        rays_on_obj.append(np.where(instance_segm.flatten() == obj_track_id+1)[0])
+                        rays_on_obj.append(np.where(instance_segm.flatten() == obj_track_id + 1)[0])
                     rays_on_obj = np.concatenate(rays_on_obj)
             elif bboxes is not None:
                 # Ray selection from 2D bounding boxes (early experiments)
@@ -1599,9 +1649,9 @@ def train():
                 obj_mask[remove_mask] = 0
                 # Remove objects from graph
                 rays_rgb = remove_obj_from_set(rays_rgb, np.array(obj_meta_ls), args.remove_obj)
-                obj_nodes = np.reshape(np.transpose(obj_nodes, [0, 2, 3, 1, 4]), [-1, args.max_input_objects*2, 3])
+                obj_nodes = np.reshape(np.transpose(obj_nodes, [0, 2, 3, 1, 4]), [-1, args.max_input_objects * 2, 3])
                 obj_nodes = remove_obj_from_set(obj_nodes, np.array(obj_meta_ls), args.remove_obj)
-                obj_nodes = np.reshape(obj_nodes, [len(images), H, W, args.max_input_objects*2, 3])
+                obj_nodes = np.reshape(obj_nodes, [len(images), H, W, args.max_input_objects * 2, 3])
                 obj_nodes = np.transpose(obj_nodes, [0, 3, 1, 2, 4])
 
             # Debugging options to display selected rays/pixels
@@ -1609,7 +1659,7 @@ def train():
             if args.debug_local and debug_pixel_selection:
                 for i_smplimg in range(len(i_train)):
                     rays_rgb_debug = np.array(rays_rgb)
-                    rays_rgb_debug[rays_on_obj, :] += np.random.rand(3) #0.
+                    rays_rgb_debug[rays_on_obj, :] += np.random.rand(3)  # 0.
                     # rays_rgb_debug[remove_mask, :] += np.random.rand(3)
                     plt.figure()
                     img_sample = np.reshape(rays_rgb_debug[(H * W) * i_smplimg:(H * W) * (i_smplimg + 1), 2, :],
@@ -1676,7 +1726,7 @@ def train():
         # Random over all images
         if not args.use_object_properties:
             # No object specific representations
-            batch = rays_rgb[i_batch:i_batch+N_rand]  # [B, 2+1, 3*?]
+            batch = rays_rgb[i_batch:i_batch + N_rand]  # [B, 2+1, 3*?]
             batch = tf.transpose(batch, [1, 0, 2])
 
             # batch_rays[i, n, xyz] = ray origin or direction, example_id, 3D position
@@ -1703,8 +1753,7 @@ def train():
         if args.use_object_properties:
             # batch_obj[N_rand, max_obj, properties+0]
             batch_obj_dyn = tf.reshape(tf.transpose(
-                batch_dyn, [1, 0, 2]), [batch.get_shape()[1], args.max_input_objects, add_input_rows*3])
-
+                batch_dyn, [1, 0, 2]), [batch.get_shape()[1], args.max_input_objects, add_input_rows * 3])
 
             # xyz + roty
             batch_obj = batch_obj_dyn[..., :4]
@@ -1721,12 +1770,10 @@ def train():
 
             batch_obj = tf.concat([batch_obj, batch_dim, batch_label], axis=-1)
 
-
             i_batch += N_rand
             if i_batch >= rays_rgb.shape[0]:
                 np.random.shuffle(rays_rgb)
                 i_batch = 0
-
 
         #####  Core optimization loop  #####
 
@@ -1751,14 +1798,15 @@ def train():
 
             # Add loss for latent code
             if args.latent_size > 0:
-                reg = 1/args.latent_balance    # 1/0.01
+                reg = 1 / args.latent_balance  # 1/0.01
                 latent_reg = latentReg(list(render_kwargs_train['latent_vector_dict'].values()), reg)
                 loss += latent_reg
 
         gradients = tape.gradient(loss, grad_vars)
         optimizer.apply_gradients(zip(gradients, grad_vars))
 
-        dt = time.time()-time0
+        dt = time.time() - time0
+
         #####           end            #####
 
         # Rest is logging
@@ -1794,7 +1842,7 @@ def train():
                             latent_vector_sum.value(),
                         )
 
-            if i % args.i_img == 0 and not i == 0: # and not args.debug_local:
+            if i % args.i_img == 0 and not i == 0:  # and not args.debug_local:
 
                 # Log a rendered validation view to Tensorboard
                 img_i = np.random.choice(i_val)
@@ -1808,7 +1856,7 @@ def train():
                     obj_i = tf.reshape(obj_i, [args.max_input_objects, obj_i.shape[0] // args.max_input_objects * 3])
 
                     obj_i_metadata = tf.gather(obj_meta_tensor, tf.cast(obj_i[:, 4], tf.int32),
-                                                       axis=0)
+                                               axis=0)
                     batch_track_id = obj_i_metadata[..., 0]
                     obj_i_dim = obj_i_metadata[:, 1:4]
                     obj_i_label = obj_i_metadata[:, 4][:, tf.newaxis]
@@ -1824,10 +1872,10 @@ def train():
                                                     **render_kwargs_test)
 
                 psnr = mse2psnr(img2mse(rgb, target))
-                
+
                 # Save out the validation image for Tensorboard-free monitoring
                 testimgdir = os.path.join(basedir, expname, 'tboard_val_imgs')
-                if i==0 or not os.path.exists(testimgdir):
+                if i == 0 or not os.path.exists(testimgdir):
                     os.makedirs(testimgdir, exist_ok=True)
                 imageio.imwrite(os.path.join(testimgdir, '{:06d}.png'.format(i)), to8b(rgb))
 
@@ -1843,7 +1891,6 @@ def train():
                     tf.contrib.summary.image('rgb_holdout', target[tf.newaxis])
 
                 if args.N_importance > 0:
-
                     with tf.contrib.summary.record_summaries_every_n_global_steps(args.i_img):
                         tf.contrib.summary.image(
                             'rgb0', to8b(extras['rgb0'])[tf.newaxis])
