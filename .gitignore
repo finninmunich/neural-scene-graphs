@@ -21,4 +21,5 @@ axcana.egg-info
 *.blg
 *.gz
 *.avi
+*.DS_Store
 /example_weights/
