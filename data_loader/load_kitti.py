@@ -327,7 +327,7 @@ def tracking_calib_from_txt(calibration_path):
     Tr_cam2camrect = np.eye(4)
     R_rect = np.reshape(calibs[4], [3, 3])
     Tr_cam2camrect[:3, :3] = R_rect
-    Tr_velo2cam = np.concatenate([np.reshape(calibs[5], [3, 4]), np.array([[0., 0., 0., 1.]])], axis=0)
+    Tr_velo2cam = np.concatenate([np.reshape(calibs[5], [3, 4]), np.array([[0., 0., 0., 1.]])], axis=0)#
     Tr_imu2velo = np.concatenate([np.reshape(calibs[6], [3, 4]), np.array([[0., 0., 0., 1.]])], axis=0)
 
     return {'P0': P0, 'P1': P1, 'P2': P2, 'P3': P3, 'Tr_cam2camrect': Tr_cam2camrect,
@@ -592,7 +592,7 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
     #########################################################################################
     #### Tracking Dataset ####
     dataset = 'tracking'
-    kitti_scene_no = int(basedir[-4:])
+    kitti_scene_no = int(basedir[-4:]) #./data/kitti/training/image02/0006
 
     images_ls = []
     poses_ls = []
@@ -600,10 +600,11 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
     objects_meta_ls = []
 
     if dataset == 'tracking':
-        sequence = basedir[-4:]
-        tracking_path = basedir[:-13]
+        sequence = basedir[-4:] #0006
+        tracking_path = basedir[:-13] # ./data/kitti/training
         calibration_path = os.path.join(os.path.join(tracking_path, 'calib'), sequence+'.txt')
         oxts_path_tracking = os.path.join(os.path.join(tracking_path, 'oxts'), sequence+'.txt')
+        # GPS/IMU data: location, speed, acceleration, meta information, stored as text file
         tracklet_path = os.path.join(os.path.join(tracking_path, 'label_02'), sequence+'.txt')
 
         tracking_calibration = tracking_calib_from_txt(calibration_path)
