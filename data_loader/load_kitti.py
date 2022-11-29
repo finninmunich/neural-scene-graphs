@@ -653,7 +653,7 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
 
             cam_poses_tracking = get_camera_poses_tracking(poses_velo_w_tracking, tracking_calibration, sequ_frames,
                                                            kitti_scene_no, exp)
-
+            #shape = (N_frames * 2 (2cameras),4,4)
             # Get Object poses
             #
             visible_objects, objects_meta = get_obj_pose_tracking(tracklet_path, poses_imu_w_tracking,
@@ -762,11 +762,12 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
     images = np.concatenate(images_ls)
     poses = np.concatenate(poses_ls)
 
-    objects_meta = objects_meta_ls[0]
-    N_obj = np.array([len(seq_objs[0]) for seq_objs in visible_objects_ls]).max()
+    objects_meta = objects_meta_ls[0] #only select the first sequence
+    N_obj = np.array([len(seq_objs[0]) for seq_objs in visible_objects_ls]).max() # max number of objects
     for seq_i, visible_objects in enumerate(visible_objects_ls):
         diff = N_obj - len(visible_objects[0])
         if diff > 0:
+            #reshape all visible_objects to be the same shape
             fill = np.ones([np.shape(visible_objects)[0], diff, np.shape(visible_objects)[2]]) * -1
             visible_objects = np.concatenate([visible_objects, fill], axis=1)
             visible_objects_ls[seq_i] = visible_objects
@@ -775,18 +776,18 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
             objects_meta.update(objects_meta_ls[seq_i])
 
     visible_objects = np.concatenate(visible_objects_ls)
-
+    # height width of images
     H = images.shape[1]
     W = images.shape[2]
 
     bboxes = None
-
+    # number of images
     count = np.array(range(len(images)))
     i_split = [np.sort(count[:]),
                count[int(0.8 * len(count)):],
                count[int(0.8 * len(count)):]]
 
-    novel_view = 'left'
+    novel_view = 'left' # we only use left image
     shift_frame = None
     n_oneside = int(poses.shape[0] / 2)
     render_poses = poses[:1]
@@ -811,7 +812,7 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
         start_i = 0
         # Render at trained left camera pose
         for seq_i, sequ in enumerate(selected_frames[0]):
-            sequ_frames = [sequ, selected_frames[1][seq_i]]
+            sequ_frames = [sequ, selected_frames[1][seq_i]] # start and end of this sequence
             l_sequ = sequ_frames[1] - sequ_frames[0] + 1
             render_poses = poses[start_i:start_i+l_sequ, ...] if render_poses is None \
                 else np.concatenate([render_poses, poses[start_i:start_i+l_sequ, ...]])

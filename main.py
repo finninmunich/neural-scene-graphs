@@ -1323,17 +1323,20 @@ def train():
                             remove=args.remove_frame,
                             use_time=args.use_time,
                             exp=True if 'exp' in args.expname else False)
-        # imgs [n_frames, h,w,3]
-        # poses [n_frames, 4,4]
-        # render_poses [n_test_frames, 4,4]
+        # for one sequence: (if not ,the first shape should multiply by N_sequence,and the size of each sequence will be broadcast to the largest sequence)
+        # imgs [n_frames*2, h,w,3]
+        # poses [n_frames*2, 4,4]
+        # render_poses [n_frames, 4,4]
         # hwf [H,W,focal]
         # i_splits [[train_splits],[val_splits],[test_splits]]]
-        # visible_objects [n_frames,n_obj,23]
-        # object_meta: dictionary with metadata for each object with track_id as key
-        # render_objects [n_test_frames, n_obj, 23]
-        # bboxes: 2D bounding boxes in the images stored for each of n_frames
+        # visible_objects: shape = (N_frames*2 (2 cameras), max_obj_per_frame,14), -1 for unrelated objects
+        # 14 = (frame_id, camera_id,obj_id,obj_type,length,height,width,x,y,z,yaw,pitch,roll,is_moving)
+        # objects_meta: (tracking_id, length,height,width,type)
+        # render_objects [n_frames, max_obj_per_frame, 14]
+        # bboxes: 2D bounding boxes in the images stored for each of n_frames: None
         # KITTI_obj_metadata [frame_no, tracking_id, obj_type,truncated,occluded,alpha,bbox_l, bbox_t, bbox_r, bbox_b,dim_h, dim_w, dim_l,
-        # x, y, z,rot_y,(score)]
+        # KITTI_obj_metadata is None for load_kitti_data
+        # time_stamp (n_frames*2,3)=render_time_stamp
         print('Loaded kitti', images.shape,
               # render_poses.shape,
               hwf,
