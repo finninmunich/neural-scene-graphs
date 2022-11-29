@@ -349,7 +349,8 @@ def render_rays(ray_batch,
                 one_intersec_per_ray=not obj_transparency)
             # haven't read the box_pts carefully, here is the meaning of outputs
             # pts_box_w: box-ray intersection points given in the world frame
-            # viewdirs_box_w: view directions of each intersection point in the world frame
+            # viewdirs_box_w: view directions of each intersection point in the world frame  ***
+            # I think viewdirs should also be called as ray-direction
             # pts_box_o: box-ray intersection points given in the respective object frame
             # viewdirs_box_o: view directions of each intersection point in the respective object frame
             # z_vals_in/out_w: integration step in the world frame
@@ -445,9 +446,10 @@ def render_rays(ray_batch,
                 obj_class = obj_pose[..., 8]
                 unique_classes = tf.unique(tf.reshape(obj_class, [-1]))
                 class_id = tf.reshape(unique_classes.idx, obj_class.shape)
-
+                # the input of dynamic network is in its own coordinate
                 inputs = pts_box_samples_o
-
+                # if we have latent_vector_dict, it means we use one nerf model for one class, here we need to extract
+                # the corresponding latent_vector for current obj
                 if latent_vector_dict is not None:
                     latent_vector_inputs = None
 
@@ -480,6 +482,7 @@ def render_rays(ray_batch,
 
         if not obj_only:
             # Get integration step for all models
+            # z_vals is used for raw2outputs, id is for querying different model
             z_vals, id_z_vals_bckg, id_z_vals_obj = combine_z(z_vals,
                                                               z_vals_obj_w if z_vals_in_o is not None else None,
                                                               intersection_map,
@@ -504,6 +507,7 @@ def render_rays(ray_batch,
 
         if z_vals_in_o is not None and len(z_vals_in_o) != 0:
             # Loop for one model per object and no latent representations
+            # one model for one object
             if latent_vector_dict is None:
                 obj_id = tf.reshape(object_idx, obj_pose[..., 4].shape)
                 for k, track_id in enumerate(object_y):
@@ -538,6 +542,7 @@ def render_rays(ray_batch,
                             raw += raw_k
             # Loop over classes c and evaluate each models f_c for all latent object describtor
             else:
+                # one model for one class
                 for c, class_type in enumerate(unique_classes.y):
                     # Ignore background class
                     if class_type >= 0:
@@ -593,7 +598,7 @@ def render_rays(ray_batch,
     # TODO: Reduce computation by removing 0 entrys
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(
         raw, z_vals, rays_d)
-
+    # process fine model
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
@@ -896,7 +901,7 @@ def create_nerf(args):
         trainable = False
     else:
         trainable = True
-
+    # get embedded fn for the input
     embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
 
     if args.use_time:
@@ -905,10 +910,12 @@ def create_nerf(args):
     input_ch_views = 0
     embeddirs_fn = None
     if args.use_viewdirs:
+        # get embedded fn for viewdirs
         embeddirs_fn, input_ch_views = get_embedder(
             args.multires_views, args.i_embed)
     output_ch = 4
     skips = [4]
+    # get background model
     model = init_nerf_model(
         D=args.netdepth, W=args.netwidth,
         input_ch=input_ch, output_ch=output_ch, skips=skips,
@@ -916,6 +923,7 @@ def create_nerf(args):
     grad_vars = model.trainable_variables
     models = {'model': model}
 
+    # optional: get fine model for background model
     model_fine = None
     if args.N_importance > 0:
         model_fine = init_nerf_model(
@@ -929,6 +937,7 @@ def create_nerf(args):
     embedobj_fn = None
     latent_vector_dict = None if args.latent_size < 1 else {}
     latent_encodings = None if args.latent_size < 1 else {}
+    # get dynamic models
     if args.use_object_properties and not args.bckg_only:
         models_dynamic_dict = {}
         embedobj_fn, input_ch_obj = get_embedder(
@@ -980,6 +989,7 @@ def create_nerf(args):
                 models_dynamic_dict[model_name] = model_obj
 
             for object_i in args.scene_objects:
+                #
                 name = 'latent_vector_obj_' + str(int(object_i)).zfill(5)
                 latent_vector_obj = init_latent_vector(args.latent_size, name)
                 grad_vars.append(latent_vector_obj)
