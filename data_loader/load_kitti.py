@@ -67,6 +67,7 @@ def get_rotation(roll, pitch, heading):
 def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selected_frames):
 
     def roty_matrix(roty):
+        # rotate around y axis
         c = np.cos(roty)
         s = np.sin(roty)
         return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
@@ -76,8 +77,8 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
     cam2velo = invert_transformation(velo2cam[:3, :3], velo2cam[:3, 3])
     velo2imu = invert_transformation(imu2velo[:3, :3], imu2velo[:3, 3])
 
-    objects_meta_kitti = {}
-    objects_meta = {}
+    objects_meta_kitti = {} # store all objects in sem2label with its tracking ID as key
+    objects_meta = {} # don't understand the difference from the above one
     tracklets_ls = []
 
     start_frame = selected_frames[0]
@@ -92,27 +93,31 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
     # Metadata for all objects in the scene
     for tracklet in tracklets_str:
         tracklet = tracklet.split()
-        if float(tracklet[1]) < 0:
+        if float(tracklet[1]) < 0: # if the class is don't care, then the tracking id will be -1
             continue
         id = tracklet[1]
         if tracklet[2] in _sem2label:
             type = _sem2label[tracklet[2]]
-            if not int(id) in objects_meta_kitti:
+            if not int(id) in objects_meta_kitti: # one tracking ID, one length, height, width
                 length = tracklet[12]
                 height = tracklet[10]
                 width = tracklet[11]
                 objects_meta_kitti[int(id)] = np.array([float(id), type, length, height, width])
 
             tr_array = np.concatenate([np.array(tracklet[:2]).astype(np.float), np.array([type]), np.array(tracklet[3:]).astype(np.float)])
+            #here we simply transfer the string type to class type
             tracklets_ls.append(tr_array)
             n_obj_in_frame[int(tracklet[0])] += 1
+            # for each frame, we calculate the number of objects
 
     # Objects in each frame
+    # we have excluded everything we don't want here
     tracklets_array = np.array(tracklets_ls)
 
     max_obj_per_frame = int(n_obj_in_frame[start_frame:end_frame+1].max())
     visible_objects = np.ones([(end_frame - start_frame + 1) * 2, max_obj_per_frame, 14]) * -1.
-
+    # shape = (N_frames*2 (2 cameras), max_obj_per_frame,14)
+    # 14 = (frame_id, camera_id,obj_id,obj_type,length,height,width,x,y,z,yaw,pitch,roll,is_moving)
     for tracklet in tracklets_array:
         frame_no = tracklet[0]
         if start_frame <= frame_no <= end_frame:
@@ -121,16 +126,16 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
             frame_id = np.array([frame_no])
             id_int = int(obj_id)
             obj_type = np.array([objects_meta_kitti[id_int][1]])
-            dim = objects_meta_kitti[id_int][-3:].astype(np.float32)
+            dim = objects_meta_kitti[id_int][-3:].astype(np.float32) # length, height width
 
             if id_int not in objects_meta:
                 objects_meta[id_int] = np.concatenate([np.array([id_int]).astype(np.float32),
                                                        objects_meta_kitti[id_int][2:].astype(np.float64),
                                                        np.array([objects_meta_kitti[id_int][1]]).astype(np.float64)])
+                # (tracking_id, length,height,width,type)
+            pose = tracklet[-4:] #(x,y,z,roty)
 
-            pose = tracklet[-4:]
-
-            obj_pose_c = np.eye(4)
+            obj_pose_c = np.eye(4) # in camera coordinate
             obj_pose_c[:3, 3] = pose[:3]
             roty = pose[3]
             obj_pose_c[:3, :3] = roty_matrix(roty)
@@ -139,7 +144,7 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
 
             pose_imu_w_frame_i = poses_imu_tracking[int(frame_id)]
 
-            pose_obj_w_i = np.matmul(pose_imu_w_frame_i, obj_pose_imu)
+            pose_obj_w_i = np.matmul(pose_imu_w_frame_i, obj_pose_imu) # obj in world coordinate
 
             yaw_aprox = -np.arctan2(pose_obj_w_i[1, 0], pose_obj_w_i[0, 0])
 
@@ -150,8 +155,8 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
                                 pose_obj_w_i[1, 3],
                                 pose_obj_w_i[2, 3],
                                 yaw_aprox, 0, 0, is_moving])
-
-            for j, cam in enumerate(camera_ls):
+            # in world coordinate
+            for j, cam in enumerate(camera_ls): # camera 2 3
                 cam = np.array(cam).astype(np.float32)[None]
                 obj = np.concatenate([frame_id, cam, np.array([obj_id]), obj_type, dim, pose_3d])
                 frame_cam_id = (int(frame_no) - start_frame) + j*(end_frame+1 - start_frame)
@@ -163,7 +168,7 @@ def get_obj_pose_tracking(tracklet_path, poses_imu_tracking, calibrations, selec
     obj_to_del = []
     for key, values in objects_meta.items():
         all_obj_poses = np.where(visible_objects[:, :, 2] == key)
-        if len(all_obj_poses[0]) > 0 and values[4] != 4.:
+        if len(all_obj_poses[0]) > 0 and values[4] != 4.: # 4 stands for pedestrian
             frame_intervall = all_obj_poses[0][[0, -1]]
             y = all_obj_poses[1][[0, -1]]
             obj_poses = visible_objects[[frame_intervall, y]][:, 7:10]
@@ -600,7 +605,7 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
     #### Tracking Dataset ####
     dataset = 'tracking'
     kitti_scene_no = int(basedir[-4:]) #./data/kitti/training/image02/0006
-
+    # here the _ls means for different sequence, because first_frame and last_frame are both list
     images_ls = []
     poses_ls = []
     visible_objects_ls = []
@@ -653,11 +658,14 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
             #
             visible_objects, objects_meta = get_obj_pose_tracking(tracklet_path, poses_imu_w_tracking,
                                                                   tracking_calibration, sequ_frames)
+            # visible_objects: shape = (N_frames*2 (2 cameras), max_obj_per_frame,14), -1 for unrelated objects
+            # 14 = (frame_id, camera_id,obj_id,obj_type,length,height,width,x,y,z,yaw,pitch,roll,is_moving)
+            # objects_meta: (tracking_id, length,height,width,type)
 
             # Align Axis with vkitti axis
-            poses = np.matmul(kitti2vkitti, cam_poses_tracking)
-            visible_objects[:, :, [9]] *= -1
-            visible_objects[:, :, [7, 8, 9]] = visible_objects[:, :, [7, 9, 8]]
+            poses = np.matmul(kitti2vkitti, cam_poses_tracking) # (x,-z,y)
+            visible_objects[:, :, [9]] *= -1 # for opengl, the z axis is inverted
+            visible_objects[:, :, [7, 8, 9]] = visible_objects[:, :, [7, 9, 8]] # (x,-z,y)
 
             images = get_scene_images_tracking(tracking_path, sequence, sequ_frames)
 
