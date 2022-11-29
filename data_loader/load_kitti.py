@@ -327,7 +327,7 @@ def tracking_calib_from_txt(calibration_path):
     Tr_cam2camrect = np.eye(4)
     R_rect = np.reshape(calibs[4], [3, 3])
     Tr_cam2camrect[:3, :3] = R_rect
-    Tr_velo2cam = np.concatenate([np.reshape(calibs[5], [3, 4]), np.array([[0., 0., 0., 1.]])], axis=0)
+    Tr_velo2cam = np.concatenate([np.reshape(calibs[5], [3, 4]), np.array([[0., 0., 0., 1.]])], axis=0)#
     Tr_imu2velo = np.concatenate([np.reshape(calibs[6], [3, 4]), np.array([[0., 0., 0., 1.]])], axis=0)
 
     return {'P0': P0, 'P1': P1, 'P2': P2, 'P3': P3, 'Tr_cam2camrect': Tr_cam2camrect,
@@ -337,9 +337,10 @@ def tracking_calib_from_txt(calibration_path):
 def get_poses_calibration(basedir, oxts_path_tracking=None, selected_frames=None):
 
     def oxts_to_pose(oxts):
+        # transfer the oxts data from kitti to camera pose
         poses = []
 
-        def latlon_to_mercator(lat, lon, s):
+        def latlon_to_mercator(lat, lon, s): #纬度，经度， ？ 转墨卡托
             r = 6378137.0
             x = s * r * ((np.pi * lon) / 180)
             y = s * r * np.log(np.tan((np.pi * (90 + lat)) / 360))
@@ -410,6 +411,8 @@ def get_poses_calibration(basedir, oxts_path_tracking=None, selected_frames=None
 
 
 def get_camera_poses_tracking(poses_velo_w_tracking, tracking_calibration, selected_frames, scene_no=None, exp=False):
+    # NERF use OPENGL's coordinates
+    # https://www.jianshu.com/p/f6820de32557
     camera_poses = []
 
     opengl2kitti = np.array([[1, 0, 0, 0],
@@ -456,14 +459,18 @@ def get_camera_poses_tracking(poses_velo_w_tracking, tracking_calibration, selec
     Tr_cam2velo = invert_transformation(Tr_velo2cam[:3, :3], Tr_velo2cam[:3, 3])
 
     camera_poses_imu = []
-    for cam in camera_ls:
+    for cam in camera_ls: # canera_ls [2,3]
         Tr_camrect2cam_i = tracking_calibration['Tr_camrect2cam0' + str(cam)]
         Tr_cam_i2camrect = invert_transformation(Tr_camrect2cam_i[:3, :3], Tr_camrect2cam_i[:3, 3])
+        # camera 2/3 -> rectification camera
         # transform camera axis from kitti to opengl for nerf:
         cam_i_camrect = np.matmul(Tr_cam_i2camrect, opengl2kitti)
+        # camera 2/3 -> rec camera -> camera 0
         cam_i_cam0 = np.matmul(Tr_camrect2cam, cam_i_camrect)
+        # camera 2/3 -> rec camera -> camera 0 -> velo
         cam_i_velo = np.matmul(Tr_cam2velo, cam_i_cam0)
-
+        # camera 2/3 -> rec camera -> camera 0 -> velo -> world
+        # we transfer coordinate in camera 2/3 to world coordinate -> extrinsic  = inv(pos)
         cam_i_w = np.matmul(poses_velo_w_tracking, cam_i_velo)
         camera_poses_imu.append(cam_i_w)
 
@@ -592,7 +599,7 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
     #########################################################################################
     #### Tracking Dataset ####
     dataset = 'tracking'
-    kitti_scene_no = int(basedir[-4:])
+    kitti_scene_no = int(basedir[-4:]) #./data/kitti/training/image02/0006
 
     images_ls = []
     poses_ls = []
@@ -600,32 +607,38 @@ def load_kitti_data(basedir, selected_frames=None, use_obj=True, row_id=False, r
     objects_meta_ls = []
 
     if dataset == 'tracking':
-        sequence = basedir[-4:]
-        tracking_path = basedir[:-13]
+        sequence = basedir[-4:] #0006
+        tracking_path = basedir[:-13] # ./data/kitti/training
         calibration_path = os.path.join(os.path.join(tracking_path, 'calib'), sequence+'.txt')
         oxts_path_tracking = os.path.join(os.path.join(tracking_path, 'oxts'), sequence+'.txt')
+        # GPS/IMU data: location, speed, acceleration, meta information, stored as text file
         tracklet_path = os.path.join(os.path.join(tracking_path, 'label_02'), sequence+'.txt')
 
-        tracking_calibration = tracking_calib_from_txt(calibration_path)
+        tracking_calibration = tracking_calib_from_txt(calibration_path)# P0 P1 P2 P3 cam2camrect velo2cam imu2velo
+        # kitti has 4 cameras: gray 0 1 color 2 3
         focal = tracking_calibration['P2'][0, 0]
         if exp:
             print('Experimental Coordinate Trafo')
             poses_imu_w_tracking, _, _ = get_poses_calibration(basedir, oxts_path_tracking, selected_frames)
         else:
+            # imu in world coordiante
             poses_imu_w_tracking, _, _ = get_poses_calibration(basedir, oxts_path_tracking)
 
         tr_imu2velo = tracking_calibration['Tr_imu2velo']
         tr_velo2imu = invert_transformation(tr_imu2velo[:3, :3], tr_imu2velo[:3, 3])
+        #given rotation and translation, we can get the invert_transformation
+        # things in coord velo -> world coordinate
         poses_velo_w_tracking = np.matmul(poses_imu_w_tracking, tr_velo2imu)
 
         # Get camera Poses
         for cam_i in range(2):
             transformation = np.eye(4)
-            projection = tracking_calibration['P'+str(cam_i+2)]
+            projection = tracking_calibration['P'+str(cam_i+2)] # P2 P3, color image
+            # projection can be seen as : translation from world2camera + intrsinsic
             K_inv = np.linalg.inv(projection[:3, :3])
-            R_t = projection[:3, 3]
+            R_t = projection[:3, 3]  # translation from world to camera
 
-            t_crect2c = np.matmul(K_inv, R_t)
+            t_crect2c = np.matmul(K_inv, R_t) # rectification camera to camera?
             # t_crect2c = 1./projection[[0, 1, 2],[0, 1, 2]] * projection[:, 3]
             transformation[:3, 3] = t_crect2c
             tracking_calibration['Tr_camrect2cam0'+str(cam_i+2)] = transformation

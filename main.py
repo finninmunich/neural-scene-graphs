@@ -1313,7 +1313,7 @@ def train():
 
     if args.dataset_type == 'kitti':
         # tracking2txt('../../CenterTrack/results/default_0006_results.json')
-
+        # load everythign on kitti
         images, poses, render_poses, hwf, i_split, visible_objects, objects_meta, render_objects, bboxes, \
         kitti_obj_metadata, time_stamp, render_time_stamp = \
             load_kitti_data(args.datadir,
@@ -1323,6 +1323,17 @@ def train():
                             remove=args.remove_frame,
                             use_time=args.use_time,
                             exp=True if 'exp' in args.expname else False)
+        # imgs [n_frames, h,w,3]
+        # poses [n_frames, 4,4]
+        # render_poses [n_test_frames, 4,4]
+        # hwf [H,W,focal]
+        # i_splits [[train_splits],[val_splits],[test_splits]]]
+        # visible_objects [n_frames,n_obj,23]
+        # object_meta: dictionary with metadata for each object with track_id as key
+        # render_objects [n_test_frames, n_obj, 23]
+        # bboxes: 2D bounding boxes in the images stored for each of n_frames
+        # KITTI_obj_metadata [frame_no, tracking_id, obj_type,truncated,occluded,alpha,bbox_l, bbox_t, bbox_r, bbox_b,dim_h, dim_w, dim_l,
+        # x, y, z,rot_y,(score)]
         print('Loaded kitti', images.shape,
               # render_poses.shape,
               hwf,
@@ -1342,6 +1353,7 @@ def train():
         far = args.far_plane
 
         # Fix all persons at one position
+        # we don't care about this one
         fix_ped_pose = False
         if fix_ped_pose:
             print('Pedestrians are fixed!')
@@ -1426,7 +1438,7 @@ def train():
         plot_kitti_poses(args, poses, visible_objects)
 
     # Cast intrinsics to right types
-    np.linalg.norm(poses[:1, [0, 2], 3] - poses[1:, [0, 2], 3])
+    np.linalg.norm(poses[:1, [0, 2], 3] - poses[1:, [0, 2], 3])  # this won't do anything
     H, W, focal = hwf
     H, W = int(H), int(W)
     hwf = [H, W, focal]
@@ -1436,6 +1448,7 @@ def train():
 
     # Extract objects positions and labels
     if args.use_object_properties or args.bckg_only:
+        # TODO: don't know how this works
         obj_nodes, add_input_rows, obj_meta_ls, scene_objects, scene_classes = \
             extract_object_information(args, visible_objects, objects_meta)
 
@@ -1608,18 +1621,17 @@ def train():
         rays_rgb_env = np.transpose(rays_rgb_env, [0, 2, 3, 1, 4])
         rays_rgb_env = np.stack([rays_rgb_env[i]
                                  for i in i_train], axis=0)  # train images only
-        # [(N-1)*H*W, ro+rd+rgb+ obj_pose*max_obj, 3]
+        # [(N-1)*H*W, ro+rd+rgb+ obj_node*max_obj, 3]
         rays_rgb_env = np.reshape(rays_rgb_env, [-1, 3 + input_size, 3])
 
         rays_rgb = rays_rgb_env.astype(np.float32)
         del rays_rgb_env
 
         # get all rays intersecting objects
-        if (
-                args.bckg_only or args.obj_only or args.model_library is not None or args.use_object_properties):  # and not args.debug_local:
+        if (args.bckg_only or args.obj_only or args.model_library is not None or args.use_object_properties):  # and not args.debug_local:
             bboxes = None
             print(rays_rgb.shape)
-
+            #TODO: this may be important
             if args.use_inst_segm:
                 # Ray selection from segmentation (early experiments)
                 print('Using segmentation map')
